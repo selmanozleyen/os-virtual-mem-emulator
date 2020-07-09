@@ -64,7 +64,7 @@ Memory::Memory(int _frameSize, int _numPhysical,
     }
     /* diskStream Will be closed implicitly when the object is destructed*/
     diskStream.open(diskFileName, ios::binary| ios::in | ios::out);
-    diskStream.exceptions(std::ios::failbit | std::ios::badbit);
+    //diskStream.exceptions(std::ios::failbit | std::ios::badbit);
 
 
     /* Initializing thread to reset R bits periodically */
@@ -104,7 +104,6 @@ Memory::~Memory() {
 
 /* Resets the R bits when called */
 void Memory::resetRBits() {
-    unique_lock<mutex> mtx(memMutex);
     for(auto &ent: pageTable){
         ent.referenced = false;
     }
@@ -126,7 +125,7 @@ void Memory::startProcesses() {
     vector<unsigned int> freeFrames(1 << numPhysical);
     iota(freeFrames.begin(),freeFrames.end(),0);
     cont.set(pCount, freeFrames);
-
+    unique_lock<mutex> mtx(processManMut);
     doneThreads.resize(processFuncs.size(),-1);
     for(auto& f :processFuncs){
         processThreads.emplace_back(
@@ -135,7 +134,7 @@ void Memory::startProcesses() {
                         f(this);
                         unique_lock<mutex> mtx(processManMut);
                         doneThreads[i] = 0;
-                        threadDone.notify_all();
+                        threadDone.notify_one();
                     }
                 )
         );
@@ -184,8 +183,10 @@ void Memory::waitProcesses() {
         }
         ent.present = false;
         ent.modified = false;
+        ent.referenced = false;
     }
     cont.clear();
+    processNames.clear();
     processThreads.clear();
     processFuncs.clear();
     doneThreads.clear();
@@ -237,6 +238,7 @@ void Memory::FrameCont::loadToMem(unsigned int pageNo, int pid, ProcessStats &pS
         throw logic_error("Corrupted Page Table");
     }
     parent->pageTable[pageNo].modified = false;
+    parent->pageTable[pageNo].referenced = false;
     parent->pageTable[pageNo].pageFrameNo = newFrame;
     parent->readDisk(pageNo,newFrame);
     pStats.noDiskReads++;
@@ -301,20 +303,68 @@ void Memory::FrameCont::set(int processCount, const std::vector<unsigned int> &f
     int partFrameCount = ((int)freeFrames.size())/partitionNum;
     auto startItr = freeFrames.begin();
     auto endItr = freeFrames.begin() + partFrameCount;
-
+    auto repPol = parent->replacementPol;
     for (int i = 0; i < partitionNum-1; ++i) {
-        //if(parent->replacementPol == ReplacementPolicy::nru)
+        /*
+         * PAGE REPLACEMENT POLICY DECISION MADE HERE
+         */
+        /* Create the partition considering replacement policy*/
+        if(repPol == ReplacementPolicy::nru){
             partitions.emplace_back(
                     new NRUPart(parent,vector<unsigned int>(startItr,endItr))
-           );
+            );
+        }
+        else if(repPol == ReplacementPolicy::lru){
+            partitions.emplace_back(
+                    new LRUPart(parent,vector<unsigned int>(startItr,endItr))
+            );
+        }
+        else if(repPol == ReplacementPolicy::fifo){
+            partitions.emplace_back(
+                    new FIFOPart(parent,vector<unsigned int>(startItr,endItr))
+            );
+        }
+        else if(repPol == ReplacementPolicy::sc){
+            partitions.emplace_back(
+                    new SCPart(parent,vector<unsigned int>(startItr,endItr))
+            );
+        }
+        else if(repPol == ReplacementPolicy::wsclock){
+            partitions.emplace_back(
+                    new WSClockPart(parent,vector<unsigned int>(startItr,endItr))
+            );
+        }
         startItr = endItr;
         endItr += partFrameCount;
     }
     endItr = freeFrames.end();
-    //if(parent->replacementPol == ReplacementPolicy::nru)
+    /*
+    * PAGE REPLACEMENT POLICY DECISION MADE HERE
+    */
+    if(parent->replacementPol == ReplacementPolicy::nru){
         partitions.emplace_back(
                 new NRUPart(parent,vector<unsigned int>(startItr,endItr))
         );
+    }
+    else if(repPol == ReplacementPolicy::lru){
+        partitions.emplace_back(
+                new LRUPart(parent,vector<unsigned int>(startItr,endItr))
+        );
+    }
+    else if(repPol == ReplacementPolicy::fifo){
+        partitions.emplace_back(
+                new FIFOPart(parent,vector<unsigned int>(startItr,endItr))
+        );
+    }
+    else if(repPol == ReplacementPolicy::sc){
+        partitions.emplace_back(
+                new SCPart(parent,vector<unsigned int>(startItr,endItr))
+        );
+    }else if(repPol == ReplacementPolicy::wsclock){
+        partitions.emplace_back(
+                new WSClockPart(parent,vector<unsigned int>(startItr,endItr))
+        );
+    }
 }
 
 
@@ -414,12 +464,13 @@ int Memory::get(unsigned int index, char *tName) {
 }
 
 /* This for runs at most 4 times*/
-// TODO make this const
 std::string Memory::getThreadNameFromPid(int pid) const {
     auto it = processNames.begin();
-    while(it != processNames.end())
+    while(it != processNames.end()){
         if(it->second == pid)
             return it->first;
+        it++;
+    }
     throw logic_error("Invalid Pid");
 }
 
@@ -432,9 +483,7 @@ void Memory::printPageTable() {
     printf("Printing the Page Table (If this happens often change the printIntPageTable arg):\n");
     for (unsigned int i = 0; i < pageTable.size(); ++i) {
         auto& ent = pageTable[i];
-        auto virtualTime =chrono::duration_cast<chrono::nanoseconds>
-                (chrono::seconds{ent.timer.tv_sec} +
-                chrono::nanoseconds{ent.timer.tv_nsec});
+        auto virtualTime =Memory::convertTs(ent.timer);
         printf( "Present:%d | %10uth Entry | FrameNo:%7u | "
                 "M:%d | R:%d | Counter:%10lu | VirtualTime:%20ld|\n",
                 int(ent.present),i,ent.pageFrameNo,
@@ -460,3 +509,197 @@ void Memory::printStats() const {
     fflush(stdout);
 }
 
+chrono::nanoseconds Memory::convertTs(timespec t) {
+    return chrono::duration_cast<chrono::nanoseconds>
+            (chrono::seconds{t.tv_sec} +
+             chrono::nanoseconds{t.tv_nsec});
+}
+
+
+Memory::LRUPart::LRUPart(Memory *mem, const vector<unsigned int> &freeFrames):
+Memory::ContPartition(mem,freeFrames)
+{/* Empty */}
+
+unsigned int Memory::LRUPart::getFrame(unsigned int pageNo, long *replacedFramePageNo) {
+    unsigned int frameNoToFill =0;
+    *replacedFramePageNo = -1;
+    /* If there are free pages use them*/
+    if(!freeFrames.empty()){
+        /* return free frame of memory*/
+        frameNoToFill =  freeFrames.back();
+        freeFrames.pop_back();
+        /* Enter an invalid entry*/
+        *replacedFramePageNo = -1;
+        /* Add to the loaded pageNo's list */
+        phyLoadedPages.push_back(pageNo);
+        return frameNoToFill;
+    }
+    /* Page Replacement Required */
+    else{
+        /* Find the one with the lowest Counter Field*/
+        uint64_t minC = parent->pageTable[phyLoadedPages[0]].counter, curC = 0;
+        int minIndex = 0; // index for the phyLoadedPages vector
+        for (int i = 0; i < phyLoadedPages.size(); ++i) {
+            curC = parent->pageTable[phyLoadedPages[i]].counter;
+            if(curC == 0){
+                throw logic_error("Page Table Corrupted");
+            }
+            if(curC < minC){
+                minIndex = i;
+                minC = curC;
+            }
+        }
+        /* Replace the page no in the physical address*/
+        frameNoToFill = parent->pageTable[phyLoadedPages[minIndex]].pageFrameNo;
+        /* return the replaced page No*/
+        *replacedFramePageNo = phyLoadedPages[minIndex];
+        /* Record that phyLoadedPages has changed*/
+        phyLoadedPages[minIndex] = pageNo;
+        return frameNoToFill;
+    }
+}
+
+// TODo give an error for local and input as 1 or 2
+Memory::FIFOPart::FIFOPart(Memory *mem, const vector<unsigned int> &freeFrames):
+Memory::ContPartition(mem,freeFrames){ /* Empty */}
+
+unsigned int Memory::FIFOPart::getFrame(unsigned int pageNo, long *replacedFramePageNo) {
+    unsigned int frameNoToFill =0;
+    *replacedFramePageNo = -1;
+    /* If there are free pages use them*/
+    if(!freeFrames.empty()){
+        /* return free frame of memory*/
+        frameNoToFill =  freeFrames.back();
+        freeFrames.pop_back();
+        /* Enter an invalid entry*/
+        *replacedFramePageNo = -1;
+        /* Add to the loaded pageNo's list */
+        phyLoadedPages.push(pageNo);
+        return frameNoToFill;
+    } else{
+        // set the replaced page
+        *replacedFramePageNo = (long int) phyLoadedPages.front();
+        // set the frameNo to fill
+        frameNoToFill = parent->pageTable[phyLoadedPages.front()].pageFrameNo;
+        // remove page from head
+        phyLoadedPages.pop();
+        // add page to tail
+        phyLoadedPages.push(pageNo);
+
+        return frameNoToFill;
+    }
+}
+
+Memory::SCPart::SCPart(Memory *mem, const vector<unsigned int> &freeFrames):
+Memory::ContPartition(mem,freeFrames){/* Empty */}
+
+unsigned int Memory::SCPart::getFrame(unsigned int pageNo, long *replacedFramePageNo) {
+    unsigned int frameNoToFill =0;
+    *replacedFramePageNo = -1;
+    /* If there are free pages use them*/
+    if(!freeFrames.empty()){
+        /* return free frame of memory*/
+        frameNoToFill =  freeFrames.back();
+        freeFrames.pop_back();
+        /* Enter an invalid entry*/
+        *replacedFramePageNo = -1;
+        /* Add to the loaded pageNo's list */
+        phyLoadedPages.push(pageNo);
+        return frameNoToFill;
+    } else{
+        unsigned int frontPage = 0;
+        auto & ent = parent->pageTable[0];
+        while (true){
+            frontPage = phyLoadedPages.front();
+            ent = parent->pageTable[frontPage];
+            /* If front page is referenced put it to the tail of the list and set R = 0*/
+            phyLoadedPages.pop();
+            if(ent.referenced){
+                parent->pageTable[frontPage].referenced = false;
+                phyLoadedPages.push(frontPage);
+            }
+            /* If R is zero this will be the page to replace */
+            else{
+                phyLoadedPages.push(pageNo);
+                *replacedFramePageNo = (long int) frontPage;
+                frameNoToFill = ent.pageFrameNo;
+                break;
+            }
+        }
+        return frameNoToFill;
+    }
+}
+
+Memory::WSClockPart::WSClockPart(Memory *mem, const vector<unsigned int> &freeFrames):
+Memory::ContPartition(mem,freeFrames){
+    hand = phyLoadedPages.begin();
+    tau = chrono::milliseconds(TAU);
+}
+
+unsigned int Memory::WSClockPart::getFrame(unsigned int pageNo, long *replacedFramePageNo) {
+    unsigned int frameNoToFill =0;
+    *replacedFramePageNo = -1;
+    /* If there are free pages use them*/
+    if(!freeFrames.empty()){
+        /* return free frame of memory*/
+        frameNoToFill =  freeFrames.back();
+        freeFrames.pop_back();
+        /* Enter an invalid entry*/
+        *replacedFramePageNo = -1;
+        /* Add to the loaded pageNo's list */
+        phyLoadedPages.push_back(pageNo);
+        hand = phyLoadedPages.begin();
+        return frameNoToFill;
+    } else{
+        clockid_t tCid;
+        timespec curTime{0};
+        pthread_getcpuclockid(pthread_self(),&tCid);
+        clock_gettime(tCid,&curTime);
+        auto maxTimeItr = hand,initHand = hand;
+        chrono::nanoseconds age = tau,maxTime{0};
+        auto handPageNo = *hand;
+        /* Note: Writes will be done instantly since there are no write schedule system*/
+        while(true) {
+            handPageNo = *hand;
+            if (parent->pageTable[handPageNo].referenced) {
+                parent->pageTable[handPageNo].referenced = false;
+                /* Write Current Virtual Time */
+                pthread_getcpuclockid(pthread_self(), &tCid);
+                clock_gettime(tCid, &parent->pageTable[handPageNo].timer);
+            } else {
+                /* Store the age of the page entry*/
+                clock_gettime(tCid,&curTime);
+                age = convertTs(curTime) - convertTs(parent->pageTable[handPageNo].timer);
+                if (age > tau) {
+                    /* Replace This Page */
+                    *replacedFramePageNo = (long int) handPageNo;
+                    frameNoToFill = parent->pageTable[handPageNo].pageFrameNo;
+                    /* Load to the WsClock */
+                    *hand = pageNo;
+                    incHand();
+                    return frameNoToFill;
+                } else {
+                    if (age > maxTime) {
+                        maxTime = age;
+                        maxTimeItr = hand;
+                    }
+                }
+            }
+            incHand();
+            if(hand == initHand){
+                break;
+            }
+        }
+        *replacedFramePageNo = (long int) *maxTimeItr;
+        frameNoToFill = parent->pageTable[*maxTimeItr].pageFrameNo;
+        *maxTimeItr = pageNo;
+        return frameNoToFill;
+    }
+}
+
+void Memory::WSClockPart::incHand() {
+    hand++;
+    if(hand == phyLoadedPages.end()){
+        hand = phyLoadedPages.begin();
+    }
+}

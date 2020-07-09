@@ -14,8 +14,11 @@
 #include <condition_variable>
 #include <map>
 #include <sstream>
+#include <queue>
+#include <list>
 
 #define INT_PERIOD 20
+#define TAU 40
 #define RESET   "\033[0m"
 #define GREEN   "\033[32m"
 
@@ -88,6 +91,10 @@ public:
     void printStats() const;
     class ContPartition;
     class NRUPart;
+    class LRUPart;
+    class FIFOPart;
+    class SCPart;
+    class WSClockPart;
 private:
 
     /* Class to Contain Frames In Memory */
@@ -132,7 +139,7 @@ private:
     std::vector<PageTableEntry> pageTable; // Has same elements as the pageCount of VM
     long unsigned int refCount = 0;
 
-    std::fstream diskStream;
+    std::fstream diskStream; // file representing the disk
 
     // for the interrupt thread
     const int interruptPeriod = INT_PERIOD;
@@ -141,6 +148,7 @@ private:
     std::thread intThread;
     std::atomic_bool stopSysThread{false};
 
+    static std::chrono::nanoseconds convertTs(timespec t);
 
     /* PROCESS MANAGEMENT START */
     /* The size of the process management variables won't change between;
@@ -190,6 +198,46 @@ private:
     std::vector<unsigned int> phyLoadedPages;
 };
 
+class Memory::LRUPart: public Memory::ContPartition{
+public:
 
+    LRUPart(Memory *mem, const std::vector<unsigned int> &freeFrames);
+    unsigned int getFrame(unsigned int pageNo, long *replacedFramePageNo) override;
+private:
+    std::vector<unsigned int> phyLoadedPages;
+};
+
+
+class Memory::FIFOPart: public Memory::ContPartition{
+public:
+
+    FIFOPart(Memory *mem, const std::vector<unsigned int> &freeFrames);
+    unsigned int getFrame(unsigned int pageNo, long *replacedFramePageNo) override;
+private:
+    std::queue<unsigned int> phyLoadedPages;
+};
+
+class Memory::SCPart: public Memory::ContPartition{
+public:
+
+    SCPart(Memory *mem, const std::vector<unsigned int> &freeFrames);
+    unsigned int getFrame(unsigned int pageNo, long *replacedFramePageNo) override;
+private:
+    std::queue<unsigned int> phyLoadedPages;
+};
+
+
+class Memory::WSClockPart: public Memory::ContPartition{
+public:
+
+    WSClockPart(Memory *mem, const std::vector<unsigned int> &freeFrames);
+    unsigned int getFrame(unsigned int pageNo, long *replacedFramePageNo) override;
+
+private:
+    void incHand();
+    std::list<unsigned int> phyLoadedPages;
+    std::list<unsigned int>::iterator hand;
+    std::chrono::nanoseconds tau{};
+};
 
 #endif //OSFINAL_MEMORY_H
