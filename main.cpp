@@ -7,7 +7,7 @@ using namespace std;
 
 int main(int argc, const char ** argv){
     try{
-        SortMem::run(argc,argv);
+        SortMem::run(argc, argv, <#initializer#>);
     }
     catch (exception& e) {
         cerr << "Exception Caught: " << e.what() << endl;

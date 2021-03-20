@@ -19,8 +19,7 @@
 
 #define INT_PERIOD 20
 #define TAU 40
-#define RESET   "\033[0m"
-#define GREEN   "\033[32m"
+#define WSStep 100
 
 enum ReplacementPolicy{
     nru,fifo,sc,lru,wsclock
@@ -38,6 +37,8 @@ public:
     uint64_t noPageReplacement = 0;
     uint64_t noDiskWrites = 0;
     uint64_t noDiskReads = 0;
+    ProcessStats operator+(const ProcessStats& ps) const;
+    ProcessStats operator/(int div) const;
 };
 
 
@@ -45,7 +46,7 @@ public:
 struct PageTableEntry{
 public:
     unsigned long int counter = 0;
-    struct timespec timer{};
+    struct timespec timer{0,0};
     bool present = false;
     bool modified = false;
     bool referenced = false;
@@ -68,7 +69,7 @@ public:
 class Memory {
 public:
     Memory(int frameSize, int numPhysical, int numVirtual, int pageTablePrintInt,
-            ReplacementPolicy replacementPolicy, AllocPolicy allocPol, const char * diskFileName);
+           ReplacementPolicy replacementPolicy, AllocPolicy allocPol, const char * diskFileName);
     ~Memory();
     Memory(const Memory& mem) = delete ;
     Memory& operator=(const Memory& other) = delete;
@@ -89,12 +90,17 @@ public:
     unsigned long getIntCount() const;
 
     void printStats() const;
+    ProcessStats getTotalStats() const;
+
     class ContPartition;
     class NRUPart;
     class LRUPart;
     class FIFOPart;
     class SCPart;
     class WSClockPart;
+    /* RECORDING STATS FOR THE BONUS PARTS */
+    std::map<std::string,std::vector<std::vector<bool>>> processWs{};
+    std::map<std::string,ProcessStats> stats;
 private:
 
     /* Class to Contain Frames In Memory */
@@ -148,7 +154,7 @@ private:
     std::thread intThread;
     std::atomic_bool stopSysThread{false};
 
-    static std::chrono::nanoseconds convertTs(timespec t);
+    static std::chrono::nanoseconds convertTs(struct timespec t);
 
     /* PROCESS MANAGEMENT START */
     /* The size of the process management variables won't change between;
@@ -161,12 +167,7 @@ private:
     FrameCont cont;
     std::vector<std::function<void(Memory*)>> processFuncs;
     std::map<std::string,int> processNames;
-    std::map<std::string,ProcessStats> stats;
     std::vector<std::thread> processThreads;
-    /* Index of the currently finished thread */
-    std::vector<int> doneThreads;
-    std::condition_variable threadDone;
-    std::mutex processManMut; // Process management mutex
     /* PROCESS MANAGEMENT END */
 };
 
@@ -177,6 +178,7 @@ class Memory::ContPartition{
 public:
     ContPartition(Memory *mem, std::vector<unsigned int> freeFrames);
     virtual ~ContPartition() = default;
+    ContPartition() = delete;
     /*
      * Returns the replaced/free Frame and the replaced frame pageNo if the frame was free
      * replacedFramePageNo will be -1
@@ -184,8 +186,9 @@ public:
     virtual unsigned int getFrame(unsigned int pageNo, long *replacedFramePageNo) = 0;
 
     /* Free frame no's in the physical memory*/
+    Memory * parent = nullptr;
     std::vector<unsigned int> freeFrames;
-    Memory * parent;
+
 };
 
 
@@ -203,6 +206,7 @@ public:
 
     LRUPart(Memory *mem, const std::vector<unsigned int> &freeFrames);
     unsigned int getFrame(unsigned int pageNo, long *replacedFramePageNo) override;
+    std::vector<bool> ws;
 private:
     std::vector<unsigned int> phyLoadedPages;
 };

@@ -17,10 +17,10 @@
 using namespace std;
 
 Memory::Memory(int _frameSize, int _numPhysical,
-        int _numVirtual, int _pageTablePrintInt,
-        ReplacementPolicy _replacementPolicy,
-        AllocPolicy _allocPol,
-        const char *_diskFileName):
+               int _numVirtual, int _pageTablePrintInt,
+               ReplacementPolicy _replacementPolicy,
+               AllocPolicy _allocPol,
+               const char *_diskFileName):
         frameSize(_frameSize),
         numPhysical(_numPhysical),
         numVirtual(_numVirtual),
@@ -35,9 +35,8 @@ Memory::Memory(int _frameSize, int _numPhysical,
         cont(this)
 {
     /*Checking for arguments*/
-    if(numPhysical > numVirtual ||
-    numVirtual < 4 || numPhysical < 1 ||
-    frameSize < 1 || pageTablePrintInt < 1){
+    if(numVirtual < 2 || numPhysical < 2 ||
+       frameSize < 1 || pageTablePrintInt < 1){
         throw std::invalid_argument("Invalid Argument.");
     }
 
@@ -70,10 +69,10 @@ Memory::Memory(int _frameSize, int _numPhysical,
     /* Initializing thread to reset R bits periodically */
     stopSysThread = false;
     intThread = thread([this](){
-       while (!stopSysThread) {
+        while (!stopSysThread) {
             resetRBits();
             this_thread::sleep_for(chrono::milliseconds (interruptPeriod));
-       }
+        }
     });
 }
 
@@ -92,9 +91,8 @@ void Memory::set(unsigned int index, int value, char *tName) {
 }
 
 unsigned int Memory::getPhyAddr(unsigned int va) const {
-    // TODO: math explanation on report
     return (pageTable[va >> frameSize].pageFrameNo <<  frameSize) +
-    (va & ((1 << frameSize) - 1));
+           (va & ((1 << frameSize) - 1));
 }
 
 Memory::~Memory() {
@@ -115,6 +113,7 @@ void Memory::addProcess(const std::function<void(Memory *)> &func, const char *t
     /* Add name to process name map*/
     processNames.insert(pair<string,int>(string(tName),pid));
     stats.insert(pair<string,ProcessStats>(string(tName),ProcessStats()));
+    processWs.insert(pair<string,vector<vector<bool>>>(string(tName),vector<vector<bool>>()));
 }
 
 void Memory::startProcesses() {
@@ -125,17 +124,12 @@ void Memory::startProcesses() {
     vector<unsigned int> freeFrames(1 << numPhysical);
     iota(freeFrames.begin(),freeFrames.end(),0);
     cont.set(pCount, freeFrames);
-    unique_lock<mutex> mtx(processManMut);
-    doneThreads.resize(processFuncs.size(),-1);
     for(auto& f :processFuncs){
         processThreads.emplace_back(
                 thread(
-                    [this,f,i](){
-                        f(this);
-                        unique_lock<mutex> mtx(processManMut);
-                        doneThreads[i] = 0;
-                        threadDone.notify_one();
-                    }
+                        [this,f,i](){
+                            f(this);
+                        }
                 )
         );
         i++;
@@ -143,33 +137,10 @@ void Memory::startProcesses() {
 }
 /* Must call after calling startProcesses method*/
 void Memory::waitProcesses() {
-    int count = 0;
-    unique_lock<mutex> mtx(processManMut);
-    int initProcessCount = processThreads.size();
-    /* Checking if a thread is done*/
-    for(int i = 0; i < initProcessCount; i++){
-        if(doneThreads[i] == 0){
-            count++;
-            processThreads[i].join();
-            /* show it is joined*/
-            doneThreads[i] = -2;
-            /* TODO add free pages here */
-        }
-    }
-    /* Wait until all threads are done*/
-    while(count != initProcessCount){
-        threadDone.wait(mtx);
-        for(int i = 0; i < initProcessCount; i++){
-            if(doneThreads[i] == 0){
-                count++;
-                /* join */
-                processThreads[i].join();
-                /* show it is joined*/
-                doneThreads[i] = -2;
-            }
-        }
-    }
-    mtx.unlock();
+
+    /* Waiting all threads */
+    for(auto& t : processThreads)
+        t.join();
 
     /* Write the remaining dirty blocks*/
     for(unsigned int i = 0 ; i < pageTable.size(); i++){
@@ -189,7 +160,6 @@ void Memory::waitProcesses() {
     processNames.clear();
     processThreads.clear();
     processFuncs.clear();
-    doneThreads.clear();
 }
 
 int Memory::getSimulationPid(const char *tName) const {
@@ -197,14 +167,13 @@ int Memory::getSimulationPid(const char *tName) const {
 }
 
 Memory::FrameCont::FrameCont(Memory *parent) :parent(parent){/* Empty */}
-// TODO do partition classes read only
 
 void Memory::FrameCont::loadToMem(unsigned int pageNo, int pid, ProcessStats &pStats) {
     /* According to alloc policy get the partition index*/
     int partNo = 0;
     if(parent->allocPol == AllocPolicy::local){
         partNo = pid;
-        if(partNo > partitions.size())
+        if(partNo > (long int)partitions.size())
             throw invalid_argument("Given Pid is invalid");
     }
     /* Get new pageNo by the partition object*/
@@ -226,9 +195,9 @@ void Memory::FrameCont::loadToMem(unsigned int pageNo, int pid, ProcessStats &pS
         parent->pageTable[replacedPageNo].present = false;
         /* If the replaced page is modified write before replacing it*/
         if(parent->pageTable[replacedPageNo].modified){
-           parent->writeDisk(replacedPageNo,parent->pageTable[replacedPageNo].pageFrameNo);
-           /* Update the stats */
-           pStats.noDiskWrites++;
+            parent->writeDisk(replacedPageNo,parent->pageTable[replacedPageNo].pageFrameNo);
+            /* Update the stats */
+            pStats.noDiskWrites++;
         }
         parent->pageTable[replacedPageNo].modified = false;
     }
@@ -250,13 +219,31 @@ Memory::FrameCont::~FrameCont() {
 
 /* Returns the updated Frame No of the memory */
 unsigned int Memory::FrameCont::updatePT(unsigned int va, int pid, bool modified, bool referenced) {
-    auto& pStats = parent->stats.at(parent->getThreadNameFromPid(pid));
+    auto tName = parent->getThreadNameFromPid(pid);
+    auto& pStats = parent->stats.at(tName);
     /* An access to memory happened printing PT if needed*/
     parent->refCount++;
-    if(parent->refCount == parent->pageTablePrintInt){
-        parent->refCount = 0;
+    if(parent->refCount % (unsigned int)parent->pageTablePrintInt == 0){
         /* Printing the Page Table */
         parent->printPageTable();
+    }
+     /*BONUS PART STATS ARE RECORDED HERE*/
+    else if(parent->replacementPol == ReplacementPolicy::lru &&
+    parent->processFuncs.size() > 1 &&
+    parent->refCount % WSStep == 0){
+        int partNo = 0;
+        if(parent->allocPol == AllocPolicy::local){
+            partNo = pid;
+            if(partNo > (long int)partitions.size())
+                throw invalid_argument("Given Pid is invalid");
+        }
+        /* IF THIS IS LRU AND A SORTING ALGORITHM*/
+        auto * lruPart = dynamic_cast<LRUPart *>(partitions[partNo]);
+        parent->processWs.at(tName).emplace_back(lruPart->ws);
+        for (int i = 0; i < (int) lruPart->ws.size(); ++i) {
+            lruPart->ws[i] = false;
+        }
+
     }
     /* Check if it is not a hit*/
     if(referenced) pStats.noReads++;
@@ -296,7 +283,7 @@ void Memory::FrameCont::set(int processCount, const std::vector<unsigned int> &f
         partitionNum = processCount;
     }
     /* If there are more partitions than free frames*/
-    if(freeFrames.size() < partitionNum)
+    if(((int)freeFrames.size()) < partitionNum)
         throw logic_error("Given free frames for memory is below the minimum required"
                           "(Min. increases if local allocation is active).");
 
@@ -369,7 +356,7 @@ void Memory::FrameCont::set(int processCount, const std::vector<unsigned int> &f
 
 
 Memory::NRUPart::NRUPart(Memory *mem, const vector<unsigned int> &freeFrames):
-Memory::ContPartition(mem,freeFrames)
+        Memory::ContPartition(mem,freeFrames)
 {/* Empty */}
 
 unsigned int Memory::NRUPart::getFrame(unsigned int pageNo, long *replacedFramePageNo) {
@@ -386,7 +373,7 @@ unsigned int Memory::NRUPart::getFrame(unsigned int pageNo, long *replacedFrameP
         phyLoadedPages.push_back(pageNo);
         return frameNoToFill;
     }
-    /* If there is no free frame replace one*/
+        /* If there is no free frame replace one*/
     else{
         /* Find the classes from 0 to 3*/
         vector<unsigned int> class1(0);
@@ -394,20 +381,20 @@ unsigned int Memory::NRUPart::getFrame(unsigned int pageNo, long *replacedFrameP
         for(unsigned int i = 0; i < phyLoadedPages.size() ;i++){
             /* Class 0 found no need to proceed*/
             if(!parent->pageTable[phyLoadedPages[i]].referenced &&
-                !parent->pageTable[phyLoadedPages[i]].modified){
+               !parent->pageTable[phyLoadedPages[i]].modified){
                 frameNoToFill = parent->pageTable[phyLoadedPages[i]].pageFrameNo;
                 *replacedFramePageNo = (long) phyLoadedPages[i];
                 phyLoadedPages[i] = pageNo;
                 return frameNoToFill;
             }
-            /* Class 1*/
+                /* Class 1*/
             else if(!parent->pageTable[phyLoadedPages[i]].referenced &&
-                parent->pageTable[phyLoadedPages[i]].modified){
+                    parent->pageTable[phyLoadedPages[i]].modified){
                 class1.push_back(i);
             }
-            /* Class 2*/
+                /* Class 2*/
             else if(parent->pageTable[phyLoadedPages[i]].referenced &&
-            !parent->pageTable[phyLoadedPages[i]].modified){
+                    !parent->pageTable[phyLoadedPages[i]].modified){
                 class2.push_back(i);
             }
         }
@@ -432,8 +419,8 @@ unsigned int Memory::NRUPart::getFrame(unsigned int pageNo, long *replacedFrameP
 }
 
 Memory::ContPartition::ContPartition(Memory *mem, vector<unsigned int> freeFrames):
-parent(mem),
-freeFrames(move(freeFrames))
+        parent(mem),
+        freeFrames(move(freeFrames))
 { /* Empty */}
 
 
@@ -491,38 +478,60 @@ void Memory::printPageTable() {
                 int(ent.referenced),
                 ent.counter,
                 virtualTime.count()
-                );
+        );
         fflush(stdout);
     }
 }
 
 void Memory::printStats() const {
-    printf("Printing Stats For Each Simulated Process:\n");
+    printf("[Stat Print]: Printing Stats For Each Simulated Process:\n");
     for (auto& p: stats){
         auto &s = p.second;
         printf("Process Name: %8s | Read Count : %10lu | Write Count %10lu | "
                "Page Misses: %8lu | Page Replacement %8lu | Disk Reads: %8lu | "
                "Disk Writes %8lu\n",
-                p.first.c_str(),s.noReads,s.noWrites,s.noPageMisses,
-                s.noPageReplacement,s.noDiskReads,s.noDiskWrites);
+               p.first.c_str(),s.noReads,s.noWrites,s.noPageMisses,
+               s.noPageReplacement,s.noDiskReads,s.noDiskWrites);
     }
+    auto t = getTotalStats();
+    printf("TOTAL:                 | Read Count : %10lu | Write Count %10lu | "
+           "Page Misses: %8lu | Page Replacement %8lu | Disk Reads: %8lu | "
+           "Disk Writes %8lu\n",
+           t.noReads,t.noWrites,t.noPageMisses,
+           t.noPageReplacement,t.noDiskReads,t.noDiskWrites);
+
     fflush(stdout);
 }
 
-chrono::nanoseconds Memory::convertTs(timespec t) {
+chrono::nanoseconds Memory::convertTs(struct timespec t) {
     return chrono::duration_cast<chrono::nanoseconds>
             (chrono::seconds{t.tv_sec} +
              chrono::nanoseconds{t.tv_nsec});
 }
 
+ProcessStats Memory::getTotalStats() const{
+    ProcessStats total{};
+    for(auto &s : stats){
+        total.noDiskWrites += s.second.noDiskWrites;
+        total.noDiskReads += s.second.noDiskReads;
+        total.noWrites += s.second.noWrites;
+        total.noReads += s.second.noReads;
+        total.noPageReplacement += s.second.noPageReplacement;
+        total.noPageMisses += s.second.noPageMisses;
+    }
+    return total;
+}
+
 
 Memory::LRUPart::LRUPart(Memory *mem, const vector<unsigned int> &freeFrames):
-Memory::ContPartition(mem,freeFrames)
-{/* Empty */}
+Memory::ContPartition(mem,freeFrames),ws(1 << mem->numVirtual,false)
+{/* Empty*/}
 
 unsigned int Memory::LRUPart::getFrame(unsigned int pageNo, long *replacedFramePageNo) {
     unsigned int frameNoToFill =0;
     *replacedFramePageNo = -1;
+    /* Add this to the working set */
+    ws[pageNo] = true;
     /* If there are free pages use them*/
     if(!freeFrames.empty()){
         /* return free frame of memory*/
@@ -534,12 +543,12 @@ unsigned int Memory::LRUPart::getFrame(unsigned int pageNo, long *replacedFrameP
         phyLoadedPages.push_back(pageNo);
         return frameNoToFill;
     }
-    /* Page Replacement Required */
+        /* Page Replacement Required */
     else{
         /* Find the one with the lowest Counter Field*/
         uint64_t minC = parent->pageTable[phyLoadedPages[0]].counter, curC = 0;
-        int minIndex = 0; // index for the phyLoadedPages vector
-        for (int i = 0; i < phyLoadedPages.size(); ++i) {
+        unsigned int minIndex = 0; // index for the phyLoadedPages vector
+        for (unsigned int i = 0; i < phyLoadedPages.size(); ++i) {
             curC = parent->pageTable[phyLoadedPages[i]].counter;
             if(curC == 0){
                 throw logic_error("Page Table Corrupted");
@@ -561,7 +570,7 @@ unsigned int Memory::LRUPart::getFrame(unsigned int pageNo, long *replacedFrameP
 
 // TODo give an error for local and input as 1 or 2
 Memory::FIFOPart::FIFOPart(Memory *mem, const vector<unsigned int> &freeFrames):
-Memory::ContPartition(mem,freeFrames){ /* Empty */}
+        Memory::ContPartition(mem,freeFrames){ /* Empty */}
 
 unsigned int Memory::FIFOPart::getFrame(unsigned int pageNo, long *replacedFramePageNo) {
     unsigned int frameNoToFill =0;
@@ -591,7 +600,7 @@ unsigned int Memory::FIFOPart::getFrame(unsigned int pageNo, long *replacedFrame
 }
 
 Memory::SCPart::SCPart(Memory *mem, const vector<unsigned int> &freeFrames):
-Memory::ContPartition(mem,freeFrames){/* Empty */}
+        Memory::ContPartition(mem,freeFrames){/* Empty */}
 
 unsigned int Memory::SCPart::getFrame(unsigned int pageNo, long *replacedFramePageNo) {
     unsigned int frameNoToFill =0;
@@ -608,7 +617,7 @@ unsigned int Memory::SCPart::getFrame(unsigned int pageNo, long *replacedFramePa
         return frameNoToFill;
     } else{
         unsigned int frontPage = 0;
-        auto & ent = parent->pageTable[0];
+        auto ent = parent->pageTable[0];
         while (true){
             frontPage = phyLoadedPages.front();
             ent = parent->pageTable[frontPage];
@@ -618,12 +627,12 @@ unsigned int Memory::SCPart::getFrame(unsigned int pageNo, long *replacedFramePa
                 parent->pageTable[frontPage].referenced = false;
                 phyLoadedPages.push(frontPage);
             }
-            /* If R is zero this will be the page to replace */
+                /* If R is zero this will be the page to replace */
             else{
                 phyLoadedPages.push(pageNo);
                 *replacedFramePageNo = (long int) frontPage;
-                frameNoToFill = ent.pageFrameNo;
-                break;
+                frameNoToFill = parent->pageTable[frontPage].pageFrameNo;
+                return frameNoToFill;
             }
         }
         return frameNoToFill;
@@ -631,7 +640,7 @@ unsigned int Memory::SCPart::getFrame(unsigned int pageNo, long *replacedFramePa
 }
 
 Memory::WSClockPart::WSClockPart(Memory *mem, const vector<unsigned int> &freeFrames):
-Memory::ContPartition(mem,freeFrames){
+        Memory::ContPartition(mem,freeFrames){
     hand = phyLoadedPages.begin();
     tau = chrono::milliseconds(TAU);
 }
@@ -652,7 +661,7 @@ unsigned int Memory::WSClockPart::getFrame(unsigned int pageNo, long *replacedFr
         return frameNoToFill;
     } else{
         clockid_t tCid;
-        timespec curTime{0};
+        struct timespec curTime{0,0};
         pthread_getcpuclockid(pthread_self(),&tCid);
         clock_gettime(tCid,&curTime);
         auto maxTimeItr = hand,initHand = hand;
@@ -702,4 +711,34 @@ void Memory::WSClockPart::incHand() {
     if(hand == phyLoadedPages.end()){
         hand = phyLoadedPages.begin();
     }
+}
+
+ProcessStats ProcessStats::operator+(const ProcessStats &ps) const {
+    auto res = ProcessStats();
+    res.noReads = this->noReads+ps.noReads;
+    res.noWrites = this->noWrites+ps.noWrites;
+    res.noPageMisses = this->noPageMisses+ps.noPageMisses;
+    res.noPageReplacement = this->noPageReplacement+ps.noPageReplacement;
+    res.noDiskWrites = this->noDiskWrites+ps.noDiskWrites;
+    res.noDiskReads = this->noDiskReads+ps.noDiskReads;
+
+
+    return res;
+
+    return res;
+}
+
+ProcessStats ProcessStats::operator/(int div) const {
+    if(!div)
+        throw logic_error("Division by zero");
+    ProcessStats res = ProcessStats();
+
+    res.noReads = this->noReads/div;
+    res.noWrites = this->noWrites/div;
+    res.noPageMisses = this->noPageMisses/div;
+    res.noPageReplacement = this->noPageReplacement/div;
+    res.noDiskWrites = this->noDiskWrites/div;
+    res.noDiskReads = this->noDiskReads/div;
+
+    return res;
 }

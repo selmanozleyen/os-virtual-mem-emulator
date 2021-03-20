@@ -154,9 +154,8 @@ void SortMem::check(Memory *m) {
     cout << "[Check]: Memory is sorted increasingly.\n";
 }
 
-void SortMem::run(int argc, const char **argv) {
-    /* Seed the rand() function */
-    srand(1000);
+void SortMem::run(int argc, const char **argv, RunStats &rs) {
+
 
     /* Init variables*/
     int frameSize,numPhysical,numVirtual,pageTablePrintInt;
@@ -166,57 +165,8 @@ void SortMem::run(int argc, const char **argv) {
 
     /* Reading and checking the input of the user */
     read_args(argc,argv,&frameSize,&numPhysical,&numVirtual,&pageTablePrintInt,
-            &pageReplacement,&allocPolicy,&fName);
-
-    /* Setting functions as types to give it to the Memory Class */
-    /* This is important for the sake of encapsulation. */
-    unsigned long int totSize = (1 << (numVirtual + frameSize));
-    auto quarterLen = (totSize >> 2);
-    function <void(Memory*)> bubbleFunc = bind(bubble,placeholders::_1,0,quarterLen),
-        quickFunc = bind(quick,placeholders::_1,1*quarterLen,2*quarterLen),
-        mergeFunc = bind(merge,placeholders::_1,2*quarterLen,3*quarterLen),
-        indexFunc = bind(index,placeholders::_1,3*quarterLen,4*quarterLen),
-        fillFunc = bind(fill,placeholders::_1),
-        checkFunc = bind(check,placeholders::_1),
-        printFunc = bind(printMem,placeholders::_1);
-    /* Function initializing done */
-
-    /* Creating the memory object */
-    Memory m(frameSize,numPhysical,numVirtual,pageTablePrintInt,pageReplacement,allocPolicy,fName);
-
-    /* Created The Memory */
-    cout << "[Main]: Created the memory, now running process fill (process in simulation)\n";
-    m.addProcess(fillFunc,"fill");
-    /* Start and wait the process*/
-    m.startProcesses();
-    /* Join the processes*/
-    m.waitProcesses();
-
-    cout << "[Main]: Fill process finished, now starting sort processes\n";
-    m.addProcess(bubbleFunc,"bubble");
-    m.addProcess(quickFunc,"quick");
-    m.addProcess(mergeFunc,"merge");
-    m.addProcess(indexFunc,"index");
-    /* Start and wait the process*/
-    m.startProcesses();
-    cout << "[Main]: Started the sort processes\n";
-    m.waitProcesses();
-    cout << "[Main]: Sort processes are finished, now starting check process\n";
-
-
-    /* RUNNING THE CHECK FUNCTION */
-    m.addProcess(checkFunc,"check");
-    /* Start and wait the process*/
-    m.startProcesses();
-    m.waitProcesses();
-    /* CHECK FUNC END*/
-
-    cout << "[Main]: Check process is done.\n"; // report
-
-
-    /* All processes are done now print the stats*/
-    m.printStats();
-
+              &pageReplacement,&allocPolicy,&fName);
+    run(frameSize,numPhysical,numVirtual,pageTablePrintInt,pageReplacement,allocPolicy,fName,rs);
 }
 
 /* Lomuto Partition For QuickSort*/
@@ -262,7 +212,7 @@ void SortMem::read_args(int argc, const char **argv, int *frameSize, int *numPhy
     if(SortMem::argCount != argc)
         throw invalid_argument("Argument count is invalid");
     *frameSize = stoi(argv[1]),*numPhysical = stoi(argv[2]),
-            *numVirtual = stoi(argv[3]),*pageTablePrintInt = stoi(argv[6]);
+    *numVirtual = stoi(argv[3]),*pageTablePrintInt = stoi(argv[6]);
 
     if(*frameSize <= 0 || *numPhysical <= 0 || *numVirtual <= 0)
         throw invalid_argument("Please check your arguments.");
@@ -299,7 +249,7 @@ void SortMem::mergeArr(Memory *m, unsigned long l, unsigned long mid, unsigned l
     auto start = mid + 1,index = start;
 
     int arrMid = m->get(mid,tName),arrStart = m->get(start,tName),
-    arrL,value,arrIndex1;
+            arrL,value,arrIndex1;
     if(arrStart >= arrMid){ // already sorted
         return;
     }
@@ -334,4 +284,62 @@ void SortMem::mergeSortHelper(Memory *m, unsigned long l, unsigned long r, char 
 
         mergeArr(m,l,mid,r,tName);
     }
+}
+
+void SortMem::run(int frameSize, int numPhysical, int numVirtual, int pageTablePrintInt,
+                  ReplacementPolicy pageReplacement, AllocPolicy allocPolicy, const char *fName,RunStats & rs) {
+    /* Seed the rand() function */
+    srand(1000);
+    /* Setting functions as types to give it to the Memory Class */
+    /* This is important for the sake of encapsulation. */
+    unsigned long int totSize = (1 << (numVirtual + frameSize));
+    auto quarterLen = (totSize >> 2);
+    function <void(Memory*)> bubbleFunc = bind(bubble,placeholders::_1,0,quarterLen),
+            quickFunc = bind(quick,placeholders::_1,1*quarterLen,2*quarterLen),
+            mergeFunc = bind(merge,placeholders::_1,2*quarterLen,3*quarterLen),
+            indexFunc = bind(index,placeholders::_1,3*quarterLen,4*quarterLen),
+            fillFunc = bind(fill,placeholders::_1),
+            checkFunc = bind(check,placeholders::_1),
+            printFunc = bind(printMem,placeholders::_1);
+    /* Function initializing done */
+
+    /* Creating the memory object */
+    Memory m(frameSize,numPhysical,numVirtual,pageTablePrintInt,pageReplacement,allocPolicy,fName);
+
+    /* Created The Memory */
+    cout << "[Main]: Created the memory, now running process fill (process in simulation)\n";
+    m.addProcess(fillFunc,"fill");
+    /* Start and wait the process*/
+    m.startProcesses();
+    /* Join the processes*/
+    m.waitProcesses();
+
+    cout << "[Main]: Fill process finished, now starting sort processes\n";
+    m.addProcess(bubbleFunc,"bubble");
+    m.addProcess(quickFunc,"quick");
+    m.addProcess(mergeFunc,"merge");
+    m.addProcess(indexFunc,"index");
+    /* Start and wait the process*/
+    m.startProcesses();
+    cout << "[Main]: Started the sort processes\n";
+    m.waitProcesses();
+    cout << "[Main]: Sort processes are finished, now starting check process\n";
+
+
+    /* RUNNING THE CHECK FUNCTION */
+    m.addProcess(checkFunc,"check");
+    /* Start and wait the process*/
+    m.startProcesses();
+    m.waitProcesses();
+    /* CHECK FUNC END*/
+
+    cout << "[Main]: Check process is done.\n"; // report
+
+
+    /* All processes are done now print the stats*/
+    m.printStats();
+    /* Returning the run stats */
+    rs.stats = m.stats;
+    rs.total = m.getTotalStats();
+    rs.processWs = m.processWs;
 }
