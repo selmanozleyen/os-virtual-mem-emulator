@@ -3,8 +3,7 @@
 A simulation of the virtual memory. Page replacement and allocation algorithms are compared by the number of:
 * Reads
 * Writes  
-* Page misses  
-* Page replacements  
+*  Page replacements  
 * Disk page writes  
 * Disk page reads  
 ```
@@ -39,13 +38,61 @@ make
 ## Results and Evaluation
 Some stats to compare the algorithms.  
 ![pic](media/1.png)
-Here index sort causes many misses because index sort changes the target array elements only when the sorted position of each index is known thus the number of writes required would be minimal. Disk reads are very high because locality principles do not apply strongly in the first phase of the algorithm. In the second phase even though the number of writes is minimum, disk writes are very high are done to unrelated places because the initial array given is unsorted. Even though bubble sort has 100 times more number of writes the disk writes are close to each other with index sort. Index sort is maybe more useful when the target array elements are big data structures. 
+Here index sort causes many misses because index sort changes the target array elements only when the sorted position of each index is known thus the number of writes required would be minimal. re very high because locality principles do not apply strongly in the first phase of the algorithm. In the second phase even though the number of writes is minimum,  very high are done to unrelated places because the initial array given is unsorted. Even though bubble sort has 100 times more number of writes the  close to each other with index sort. Index sort is maybe more useful when the target array elements are big data structures. 
 
 
 
 
 Let ```w(k,t)``` the working set be the set of pages used by an application in the most recent ```k``` references at time ```t```. We can plot the appoximate working set graph with our utilities when ```t``` is fixed to the finishing moment of the application.  
-Here is an example for Merge Sort thread.
+Here is an example for Merge Sort thread.  
 ![pic2](media/MergeSort.png)  
 
-The sudden increase in the number of pages is probably because quicksort thread finished early and the remaining pages was given to merge sort thread. 
+The sudden increase in the number of pages is probably because quicksort thread finished early and the remaining pages was given to merge sort thread.  
+
+Benchmark results from various experiments.  
+
+## Bubble Sort
+**Optimal Frame Size is 4**  
+| Read Count | Write Count | Page Misses | Page Replacement | Disk Reads | Disk Writes |
+| ----------- | ----------- | ----------- | ----------- | ----------- | ----------- |
+|  65251 |    36982 |   5693 |     5693 |     5693 |   1671|  
+
+**Optimal Replacement Algorithm is LRU**
+| Read Count | Write Count | Page Misses | Page Replacement | Disk Reads | Disk Writes |
+| ----------- | ----------- | ----------- | ----------- | ----------- | ----------- |
+|  65251 |    36982 |   9029 |     9024 |     9029 |   2197|
+
+## Quick Sort
+**Optimal Frame Size is 4**
+| Read Count | Write Count | Page Misses | Page Replacement | Disk Reads | Disk Writes |
+| ----------- | ----------- | ----------- | ----------- | ----------- | ----------- |
+|   4678 |     2230 |    638 |      636 |      638 |    311|
+
+**Optimal Replacement Algorithm is LRU**  
+| Read Count | Write Count | Page Misses | Page Replacement | Disk Reads | Disk Writes |
+| ----------- | ----------- | ----------- | ----------- | ----------- | ----------- |
+|   4678 |     2230 |    577 |      574 |      577 |    244|
+## Merge Sort
+**Optimal Frame Size is 4**    
+| Read Count | Write Count | Page Misses | Page Replacement | Disk Reads | Disk Writes |
+| ----------- | ----------- | ----------- | ----------- | ----------- | ----------- |
+|  21337 |    17585 |   2394 |    2394 |     2394 |   1113|
+
+**Optimal Replacement Algorithm is LRU**   
+| Read Count | Write Count | Page Misses | Page Replacement | Disk Reads | Disk Writes |  
+| ----------- | ----------- | ----------- | ----------- | ----------- | ----------- |  
+|  21337 |    17585 |   3879 |    3877 |     3879 |   1385|  
+
+
+## Index Sort
+**Optimal Frame Size is 3**  
+| Read Count | Write Count | Page Misses | Page Replacement | Disk Reads | Disk Writes |
+| ----------- | ----------- | ----------- | ----------- | ----------- | ----------- |
+| 132020 |      948 |  54445 |   54442 |    54445 |   4565|
+
+**Optimal Replacement Algorithm is LRU**  
+| Read Count | Write Count | Page Misses | Page Replacement | Disk Reads | Disk Writes |
+| ----------- | ----------- | ----------- | ----------- | ----------- | ----------- |
+| 132020 |      948 |  44718 |   44714 |    44718 |   8597|
+
+
