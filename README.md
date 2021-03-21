@@ -46,5 +46,6 @@ Here index sort causes many misses because index sort changes the target array e
 
 Let ```w(k,t)``` the working set be the set of pages used by an application in the most recent ```k``` references at time ```t```. We can plot the appoximate working set graph with our utilities when ```t``` is fixed to the finishing moment of the application.  
 Here is an example for Merge Sort thread.
-![pic2](media/MergeSort.png)
+![pic2](media/MergeSort.png)  
+
 The sudden increase in the number of pages is probably because quicksort thread finished early and the remaining pages was given to merge sort thread. 
